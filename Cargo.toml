@@ -1,0 +1,34 @@
+[package]
+name = "simu3d"
+version = "0.1.0"
+edition = "2021"
+description = "Voxel engine: constant gravity, structural collapse, and cubic-grid blast fragments"
+license = "MIT"
+
+[dependencies]
+rapier3d = "0.36.1"
+
+[dependencies.wgpu]
+version = "30.0.1"
+optional = true
+
+[dependencies.winit]
+version = "0.30.13"
+optional = true
+
+[dependencies.pollster]
+version = "0.4"
+optional = true
+
+[dependencies.bytemuck]
+version = "1.21"
+features = ["derive"]
+optional = true
+
+[dependencies.env_logger]
+version = "0.11"
+optional = true
+
+[features]
+default = ["window"]
+window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:bytemuck", "dep:env_logger"]
