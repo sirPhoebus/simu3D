@@ -431,10 +431,12 @@ impl Simulation {
             let shatter = d <= (radius * 0.28).max(0.45);
             condemned.insert(*cell, (impulse, shatter));
         }
-        let mut queue: std::collections::VecDeque<(IVec3, f32)> = condemned
+        let mut seeds: Vec<(IVec3, f32)> = condemned
             .iter()
             .map(|(cell, (impulse, _))| (*cell, *impulse))
             .collect();
+        seeds.sort_by_key(|(cell, _)| (cell.x, cell.y, cell.z));
+        let mut queue: std::collections::VecDeque<(IVec3, f32)> = seeds.into();
         let mut seen: std::collections::HashSet<IVec3> = condemned.keys().copied().collect();
         while let Some((cell, incoming)) = queue.pop_front() {
             if condemned.len() >= 500 {
@@ -1163,10 +1165,33 @@ impl Simulation {
                         } else {
                             point.local_p2
                         };
-                        let world = col.position().transform_point(Vector::new(local.x, local.y, local.z));
-                        if world.y < body_y - 0.02 {
-                            return true;
+                        let world = col
+                            .position()
+                            .transform_point(Vector::new(local.x, local.y, local.z));
+                        let body_pos = v_from(body.translation());
+                        let horizontal = ((world.x - body_pos.x).powi(2)
+                            + (world.z - body_pos.z).powi(2))
+                        .sqrt();
+                        let under_center = horizontal < self.voxels.block_size * 0.45;
+                        if world.y >= body_y - 0.02 || !under_center || pushing_up <= 0.7 {
+                            continue;
                         }
+                        let other = if ours_first {
+                            pair.collider2
+                        } else {
+                            pair.collider1
+                        };
+                        let other_fixed = self
+                            .physics
+                            .colliders
+                            .get(other)
+                            .and_then(|collider| collider.parent())
+                            .and_then(|parent| self.physics.bodies.get(parent))
+                            .is_some_and(|other_body| !other_body.is_dynamic());
+                        if other_fixed && !self.standing_below(body_pos) {
+                            continue;
+                        }
+                        return true;
                     }
                 }
             }
@@ -1208,6 +1233,16 @@ impl Simulation {
             }
         }
         false
+    }
+
+    fn standing_below(&self, pos: Vec3) -> bool {
+        let cell = world_to_cell(pos, self.voxels.block_size.max(1.0e-4));
+        (1..8).any(|dy| {
+            self.voxels
+                .blocks
+                .get(&IVec3::new(cell.x, cell.y - dy, cell.z))
+                .is_some_and(|block| block.material.solid())
+        })
     }
 
     /// Move a new rigid piece out of the remaining wall. A fixed nudge along the
@@ -2293,77 +2328,41 @@ mod tests {
     }
 
     #[test]
-    fn probe_villa_shot_hanging_cubes() {
+    fn hit_wall_piece_falls_when_nothing_is_under_it() {
         let mut cfg = Config::default();
         cfg.block_size = 0.1;
-        cfg.explosion_radius = 2.0;
+        cfg.explosion_radius = 0.25;
         cfg.blast_impulse = 7400.0;
         cfg.adhesive_stone = 300.0;
-        cfg.adhesive_glass = 1.0;
-        cfg.fragment_lifetime_secs = 0.5;
         cfg.fixed_dt = 1.0 / 120.0;
         let mut sim = Simulation::new(cfg.clone());
         sim.voxels.block_size = cfg.block_size;
-        let spawn = crate::villa::build(&mut sim.voxels);
-        sim.refresh_static();
-        let eye = Vec3::new(spawn.feet.x, spawn.feet.y + 1.6, spawn.feet.z);
-        let look = Vec3::new(spawn.yaw.sin(), -0.05, -spawn.yaw.cos()).normalized();
-        let mut hit = None;
-        for step in 1..80 {
-            let p = eye + look * (step as f32 * 0.1);
-            let cell = world_to_cell(p, cfg.block_size);
-            if sim.voxels.blocks.contains_key(&cell) {
-                hit = Some(sim.voxels.cell_center(cell));
-                break;
-            }
+        for y in 0..5 {
+            sim.voxels.set(0, y, 0, Material::Stone, true);
         }
-        let center = hit.expect("look ray missed the villa");
-        println!("shot at {center:?} from eye {eye:?}");
-        sim.explode_at(center, cfg.explosion_radius);
-        let before: Vec<(RigidBodyHandle, f32)> = sim
-            .physics
-            .bodies
-            .iter()
-            .filter(|(_, body)| body.is_dynamic())
-            .map(|(h, body)| (h, body.translation().y))
-            .collect();
-        println!(
-            "standing={} grit={} collapsed={} debris={} dynamic={}",
-            sim.block_count(),
-            sim.grit_count(),
-            sim.collapsed_count(),
-            sim.debris_count(),
-            before.len()
+        for x in 1..5 {
+            sim.voxels.set(x, 3, 0, Material::Stone, false);
+        }
+        sim.refresh_static();
+        let at = sim.voxels.cell_center(IVec3::new(2, 3, 0));
+        let y0 = at.y;
+        sim.explode_at(at, cfg.explosion_radius);
+        assert!(
+            sim.grit_count() + sim.collapsed_count() + sim.debris_count() > 0,
+            "the hit produced no rigid pieces"
         );
-        let steps = (0.4 / cfg.fixed_dt) as i32;
+        let steps = (0.5 / cfg.fixed_dt) as i32;
         for _ in 0..steps {
             sim.step(cfg.fixed_dt);
         }
-        let mut hung = 0;
-        let mut fell = 0;
-        for (handle, y0) in &before {
-            let Some(body) = sim.physics.bodies.get(*handle) else {
-                continue;
-            };
-            if !body.is_dynamic() {
-                continue;
-            }
-            let y1 = body.translation().y;
-            let drop = y0 - y1;
-            if *y0 > 0.25 && drop < 0.15 {
-                hung += 1;
-                if hung <= 12 {
-                    println!(
-                        "hung y0={y0:.3} y1={y1:.3} drop={drop:.3} vy={:.3} support={} contact={}",
-                        body.linvel().y,
-                        sim.body_has_support(*handle),
-                        sim.body_has_contact(*handle)
-                    );
-                }
-            } else if drop >= 0.15 {
-                fell += 1;
-            }
-        }
-        println!("hung={hung} fell={fell}");
+        let lowest = sim
+            .grit_lowest_y()
+            .into_iter()
+            .chain(sim.highest_collapsed_y())
+            .fold(y0, f32::min);
+        assert!(
+            y0 - lowest > 0.4,
+            "hit pieces stayed up: start {y0:.3} lowest {lowest:.3}"
+        );
     }
 }
