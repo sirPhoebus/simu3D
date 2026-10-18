@@ -26,6 +26,9 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     cam_pos: [f32; 4],
     sun_dir: [f32; 4],
+    sky_right: [f32; 4],
+    sky_up: [f32; 4],
+    sky_forward: [f32; 4],
 }
 
 #[repr(C)]
@@ -126,26 +129,83 @@ impl Gpu {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let sky_pixels = simu3d::sky::equirect_rgba16(512, 256);
+        let sky_tex = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("sky"),
+                size: wgpu::Extent3d {
+                    width: 512,
+                    height: 256,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            bytemuck::cast_slice(&sky_pixels),
+        );
+        let sky_view = sky_tex.create_view(&Default::default());
+        let sky_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sky-sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("camera-layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera-group"),
             layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&sky_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sky_sampler),
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("pipeline"),
@@ -309,13 +369,20 @@ impl Gpu {
             return;
         }
         let view = look_to_rh(eye, look, Vec3::Y);
-        let proj = perspective_rh(fov_degrees.to_radians().clamp(0.4, 2.2), aspect, 0.08, 250.0);
+        let fov_y = fov_degrees.to_radians().clamp(0.4, 2.2);
+        let proj = perspective_rh(fov_y, aspect, 0.08, 1800.0);
         let view_proj = mul(proj, view);
-        let sun = Vec3::new(0.35, 0.78, 0.52).normalized();
+        let forward = look.normalized();
+        let right = forward.cross(Vec3::Y).normalized();
+        let up = right.cross(forward);
+        let sun = simu3d::sky::sun_direction();
         let uniform = CameraUniform {
             view_proj,
             cam_pos: [eye.x, eye.y, eye.z, 1.0],
             sun_dir: [sun.x, sun.y, sun.z, 0.0],
+            sky_right: [right.x, right.y, right.z, self.size.width as f32],
+            sky_up: [up.x, up.y, up.z, self.size.height as f32],
+            sky_forward: [forward.x, forward.y, forward.z, (fov_y * 0.5).tan()],
         };
         self.queue
             .write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&uniform));
@@ -341,10 +408,12 @@ impl Gpu {
             }
             wgpu::CurrentSurfaceTexture::Validation => return,
         };
-        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(self.view_format),
-            ..Default::default()
-        });
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                format: Some(self.view_format),
+                ..Default::default()
+            });
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -403,7 +472,11 @@ impl Gpu {
                 pass.set_vertex_buffer(1, self.instance_buf.slice(..));
                 pass.set_index_buffer(self.cube_index.slice(..), wgpu::IndexFormat::Uint16);
                 // Transparent instances are packed after the opaque ones.
-                pass.draw_indexed(0..self.cube_index_count, 0, opaque_n..opaque_n + transparent_n);
+                pass.draw_indexed(
+                    0..self.cube_index_count,
+                    0,
+                    opaque_n..opaque_n + transparent_n,
+                );
             }
             if ui_count > 0 {
                 pass.set_pipeline(&self.ui);
@@ -492,7 +565,14 @@ impl Gpu {
             );
         }
         if !settings.is_empty() {
-            push_ndc_quad(&mut verts, -0.98, -0.95, -0.22, 0.95, [0.05, 0.06, 0.07, 0.92]);
+            push_ndc_quad(
+                &mut verts,
+                -0.98,
+                -0.95,
+                -0.22,
+                0.95,
+                [0.05, 0.06, 0.07, 0.92],
+            );
             let width = self.size.width.max(1) as f32;
             let height = self.size.height.max(1) as f32;
             push_text(
@@ -518,7 +598,14 @@ impl Gpu {
             for (index, line) in settings.iter().enumerate() {
                 let y = 0.74 - index as f32 * 0.055;
                 if line.selected {
-                    push_ndc_quad(&mut verts, -0.96, y - 0.04, -0.24, y + 0.012, [0.25, 0.22, 0.12, 0.95]);
+                    push_ndc_quad(
+                        &mut verts,
+                        -0.96,
+                        y - 0.04,
+                        -0.24,
+                        y + 0.012,
+                        [0.25, 0.22, 0.12, 0.95],
+                    );
                 }
                 push_text(
                     &mut verts,
@@ -567,7 +654,11 @@ impl Gpu {
                 present_mode: wgpu::PresentMode::AutoVsync,
             },
         );
-        self.depth = depth_view(&self.device, self.size.width.max(1), self.size.height.max(1));
+        self.depth = depth_view(
+            &self.device,
+            self.size.width.max(1),
+            self.size.height.max(1),
+        );
     }
 }
 
@@ -830,9 +921,14 @@ fn push_beveled_cube(verts: &mut Vec<f32>, indices: &mut Vec<u16>, chamfer: f32)
             let u = (axis + 1) % 3;
             let v = (axis + 2) % 3;
             let mut corners = [[0.0; 3]; 4];
-            for (i, (ou, ov)) in [(-inset, -inset), (inset, -inset), (inset, inset), (-inset, inset)]
-                .into_iter()
-                .enumerate()
+            for (i, (ou, ov)) in [
+                (-inset, -inset),
+                (inset, -inset),
+                (inset, inset),
+                (-inset, inset),
+            ]
+            .into_iter()
+            .enumerate()
             {
                 let mut p = [0.0; 3];
                 p[axis] = plane;
@@ -926,8 +1022,16 @@ fn orient_quad(corners: &mut [[f32; 3]; 4], normal: [f32; 3]) {
 }
 
 fn orient_tri(pts: &mut [[f32; 3]; 3], normal: [f32; 3]) {
-    let e1 = [pts[1][0] - pts[0][0], pts[1][1] - pts[0][1], pts[1][2] - pts[0][2]];
-    let e2 = [pts[2][0] - pts[0][0], pts[2][1] - pts[0][1], pts[2][2] - pts[0][2]];
+    let e1 = [
+        pts[1][0] - pts[0][0],
+        pts[1][1] - pts[0][1],
+        pts[1][2] - pts[0][2],
+    ];
+    let e2 = [
+        pts[2][0] - pts[0][0],
+        pts[2][1] - pts[0][1],
+        pts[2][2] - pts[0][2],
+    ];
     let cross = [
         e1[1] * e2[2] - e1[2] * e2[1],
         e1[2] * e2[0] - e1[0] * e2[2],
@@ -939,7 +1043,12 @@ fn orient_tri(pts: &mut [[f32; 3]; 3], normal: [f32; 3]) {
     }
 }
 
-fn push_cube_quad(verts: &mut Vec<f32>, indices: &mut Vec<u16>, corners: [[f32; 3]; 4], normal: [f32; 3]) {
+fn push_cube_quad(
+    verts: &mut Vec<f32>,
+    indices: &mut Vec<u16>,
+    corners: [[f32; 3]; 4],
+    normal: [f32; 3],
+) {
     let base = (verts.len() / 6) as u16;
     for corner in corners {
         verts.extend_from_slice(&corner);
@@ -948,7 +1057,12 @@ fn push_cube_quad(verts: &mut Vec<f32>, indices: &mut Vec<u16>, corners: [[f32; 
     indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
-fn push_cube_tri(verts: &mut Vec<f32>, indices: &mut Vec<u16>, pts: [[f32; 3]; 3], normal: [f32; 3]) {
+fn push_cube_tri(
+    verts: &mut Vec<f32>,
+    indices: &mut Vec<u16>,
+    pts: [[f32; 3]; 3],
+    normal: [f32; 3],
+) {
     let base = (verts.len() / 6) as u16;
     for corner in pts {
         verts.extend_from_slice(&corner);
@@ -984,7 +1098,10 @@ fn pick_adapter(mut adapters: Vec<wgpu::Adapter>, surface: &wgpu::Surface) -> wg
         wgpu::DeviceType::Other => 3,
         wgpu::DeviceType::Cpu => 4,
     });
-    adapters.into_iter().next().expect("no adapter can draw this window")
+    adapters
+        .into_iter()
+        .next()
+        .expect("no adapter can draw this window")
 }
 
 pub struct SettingLine {

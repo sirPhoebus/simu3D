@@ -162,7 +162,10 @@ mod tests {
         assert!(pieces.iter().all(|p| p.is_cube()));
         let small = pieces[0].volume();
         assert!((pieces[0].half.x * 2.0 - small_cube_edge()).abs() < 1.0e-6);
-        assert!((small - 1.0e-5).abs() < 1.0e-8, "small cube {small} m³, expected 10 cm³");
+        assert!(
+            (small - 1.0e-5).abs() < 1.0e-8,
+            "small cube {small} m³, expected 10 cm³"
+        );
         let sum: f32 = pieces.iter().map(|p| p.volume()).sum();
         let parent = size.x * size.y * size.z;
         assert!((sum - parent).abs() < 1.0e-6, "volume {sum} vs {parent}");
@@ -180,7 +183,9 @@ mod tests {
         let edge = small_cube_edge();
         assert!(!pieces.is_empty());
         assert!(pieces.len() <= 1000);
-        assert!(pieces.iter().all(|p| (p.half.x * 2.0 - edge).abs() < 1.0e-6));
+        assert!(pieces
+            .iter()
+            .all(|p| (p.half.x * 2.0 - edge).abs() < 1.0e-6));
     }
 
     #[test]

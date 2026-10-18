@@ -56,7 +56,14 @@ fn emit_closed_cube(mesh: &mut Mesh, origin: Vec3, side: f32, material: Material
     }
 }
 
-fn emit_cube_face(mesh: &mut Mesh, min: [f32; 3], axis: usize, positive: bool, s: f32, material: Material) {
+fn emit_cube_face(
+    mesh: &mut Mesh,
+    min: [f32; 3],
+    axis: usize,
+    positive: bool,
+    s: f32,
+    material: Material,
+) {
     let mut normal = [0.0, 0.0, 0.0];
     normal[axis] = if positive { 1.0 } else { -1.0 };
     let u = (axis + 1) % 3;

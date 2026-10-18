@@ -20,9 +20,10 @@ pub struct Config {
     pub walk_speed: f32,
     pub sprint_speed: f32,
     pub jump_speed: f32,
+    /// Capsule and eye height, in metres. Also scales walk and sprint distance against 1.7 m.
     pub player_height_m: f32,
     pub fov_degrees: f32,
-    /// 1 = right-mouse look is inverted on the vertical axis. 0 = mouse down looks down.
+    /// 1 = mouse look is inverted on the vertical axis. 0 = mouse down looks down.
     pub invert_look: f32,
     pub adhesive_stone: f32,
     pub adhesive_glass: f32,
@@ -40,6 +41,8 @@ pub struct Config {
     pub adhesive_water: f32,
     /// Full gap between two block faces, as a fraction of the block edge.
     pub block_gap: f32,
+    /// 0 = villa. 1 = the kilometre biome. 2 = the dead-end street. The settings panel cycles this and reloads.
+    pub level: u8,
 }
 
 impl Default for Config {
@@ -80,6 +83,7 @@ impl Default for Config {
             adhesive_linen: 4.0,
             adhesive_water: 0.0,
             block_gap: 0.004,
+            level: 0,
         }
     }
 }
@@ -103,6 +107,8 @@ impl Config {
             Material::Plaster => self.adhesive_plaster,
             Material::Wood => self.adhesive_wood,
             Material::WoodDark => self.adhesive_wood_dark,
+            // Trunks and leaves take no bond. The panel does not expose a knob for that.
+            Material::Trunk | Material::Leaf => 0.0,
             Material::Metal => self.adhesive_metal,
             Material::Grass => self.adhesive_grass,
             Material::Soil => self.adhesive_soil,
@@ -205,7 +211,11 @@ impl Config {
                 continue;
             }
             let Some((key, value)) = line.split_once('=') else {
-                return Err(format!("{}:{}: expected key = value", path.display(), line_no + 1));
+                return Err(format!(
+                    "{}:{}: expected key = value",
+                    path.display(),
+                    line_no + 1
+                ));
             };
             let key = key.trim();
             let value = value.trim();
@@ -246,8 +256,13 @@ impl Config {
                 "adhesive_linen" => cfg.adhesive_linen = num,
                 "adhesive_water" => cfg.adhesive_water = num,
                 "block_gap" => cfg.block_gap = num,
+                "level" => cfg.level = crate::level::normalize(num as u8),
                 other => {
-                    return Err(format!("{}:{}: unknown key {other}", path.display(), line_no + 1));
+                    return Err(format!(
+                        "{}:{}: unknown key {other}",
+                        path.display(),
+                        line_no + 1
+                    ));
                 }
             }
         }
@@ -290,7 +305,8 @@ impl Config {
              adhesive_fabric = {adhesive_fabric}\n\
              adhesive_linen = {adhesive_linen}\n\
              adhesive_water = {adhesive_water}\n\
-             block_gap = {block_gap}\n",
+             block_gap = {block_gap}\n\
+             level = {level}\n",
             gravity = self.gravity,
             fragment_count = self.fragment_count,
             lifetime = self.fragment_lifetime_secs,
@@ -324,6 +340,7 @@ impl Config {
             adhesive_linen = self.adhesive_linen,
             adhesive_water = self.adhesive_water,
             block_gap = self.block_gap,
+            level = self.level,
         );
         std::fs::write("simu3d.toml", text)
     }
@@ -353,11 +370,11 @@ fn print_help() {
          --box-size <metres>             big box edge. The 10 cm³ cubes are not a setting.\n\
          --gravity <m/s^2>               default 9.80665\n\
          --explosion-radius <metres>\n\
-         --player-height <metres>          default 1.7\n\
+         --player-height <metres>        camera and body height, default 1.7. Also scales walk and sprint\n\
          --mouse-sensitivity <radians per count>  default 0.0022; panel 0.0001 to 0.05\n\
          --config <file>\n\
          \n\
-         ZQSD move. AZERTY letters, not WASD. Mouse look, Space jump, Shift sprint.\n\
-         Left mouse fires the bazooka. R reloads. Esc releases the mouse. F3 prints counts."
+         ZQSD move. AZERTY letters, not WASD. Mouse movement looks. Space jump, Shift sprint.\n\
+         Left mouse fires the bazooka. R reloads. Esc releases the mouse. Click the window to capture it again. F1, MAP, loads the villa, the biome, or the street. F3 prints counts."
     );
 }

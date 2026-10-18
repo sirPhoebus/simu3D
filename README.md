@@ -7,7 +7,7 @@ Run
   cargo run --release
   cargo run --release -- --self-test
 
-ZQSD moves. Those are the AZERTY letters. W and A do not move. Hold the right mouse button to look. While that button is held the Windows pointer is pinned inside the window, so look does not stop when the pointer would have left. Player height is adjustable with F1 or `player_height_m` in `simu3d.toml`. F1 opens settings: field of view and the other simulation values, adjusted with the arrow keys or the wheel, and written to simu3d.toml. Mouse sensitivity in that panel runs from 0.0001 to 0.05 radians per count. Left mouse fires the bazooka. R reloads. Esc releases the mouse or closes settings. F3 prints counts.
+ZQSD moves. Those are the AZERTY letters. W and A do not move. Mouse movement looks while the window is focused. The pointer is captured, so look does not stop when it would have left the window. Esc releases it; click the window to capture it again. Player height is adjustable with F1 or `player_height_m` in `simu3d.toml`. F1 opens settings. MAP, with the left and right arrows, loads the villa or the kilometre biome. The biome ground does not break. Trees, bushes, and rocks do. Mouse sensitivity in that panel runs from 0.0001 to 0.05 radians per count. Left mouse fires the bazooka. R reloads. Esc releases the mouse or closes settings. F3 prints counts.
 
 A metal fence runs around the plot. It does not break, and it is taller than a jump, so walking off the edge is blocked. The grass, soil, terrace, and house floors do break. There is no hidden floor under the plot: a hole is a fall.
 

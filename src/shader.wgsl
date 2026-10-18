@@ -2,10 +2,19 @@ struct Camera {
     view_proj: mat4x4<f32>,
     cam_pos: vec4<f32>,
     sun_dir: vec4<f32>,
-}
+    sky_right: vec4<f32>,
+    sky_up: vec4<f32>,
+    sky_forward: vec4<f32>,
+};
 
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+@group(0) @binding(1)
+var sky_tex: texture_2d<f32>;
+
+@group(0) @binding(2)
+var sky_samp: sampler;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -26,10 +35,24 @@ fn vs_sky(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_sky(@builtin(position) clip: vec4<f32>) -> @location(0) vec4<f32> {
-    let t = clamp(clip.y / 900.0, 0.0, 1.0);
-    let horizon = vec3<f32>(0.78, 0.72, 0.62);
-    let zenith = vec3<f32>(0.42, 0.62, 0.84);
-    return vec4<f32>(mix(horizon, zenith, t), 1.0);
+    let width = max(camera.sky_right.w, 1.0);
+    let height = max(camera.sky_up.w, 1.0);
+    let tan_half = camera.sky_forward.w;
+    let ndc_x = clip.x / width * 2.0 - 1.0;
+    let ndc_y = 1.0 - clip.y / height * 2.0;
+    let aspect = width / height;
+    let dir = normalize(
+        camera.sky_forward.xyz
+            + camera.sky_right.xyz * ndc_x * tan_half * aspect
+            + camera.sky_up.xyz * ndc_y * tan_half
+    );
+    let lon = atan2(dir.z, dir.x);
+    let lat = asin(clamp(dir.y, -1.0, 1.0));
+    let uv = vec2<f32>(lon / 6.2831853 + 0.5, 0.5 - lat / 3.14159265);
+    let hdr = textureSample(sky_tex, sky_samp, uv).rgb;
+    let exposed = hdr * 1.05;
+    let mapped = exposed / (vec3<f32>(1.0) + exposed);
+    return vec4<f32>(mapped, 1.0);
 }
 
 @vertex
